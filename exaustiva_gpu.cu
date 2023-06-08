@@ -1,104 +1,160 @@
 #include <iostream>
-#include <thrust/device_vector.h>
+#include <vector>
+#include <algorithm>
 #include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
 #include <thrust/sort.h>
-#include <thrust/execution_policy.h>
+#include <thrust/remove.h>
 
 using namespace std;
 
-struct filme {
+struct Filme {
     int inicio;
     int fim;
     int categoria;
+};
 
+struct CompareFilmes {
     __host__ __device__
-    bool operator<(const filme& other) const {
-        return inicio < other.inicio;
+    bool operator()(const Filme& a, const Filme& b) const {
+        return a.fim < b.fim;
     }
 };
 
-void filtro(thrust::host_vector<filme>& movies) {
-    movies.erase(
-        remove_if(movies.begin(), movies.end(), [](const filme& movie) {
-            return movie.fim <= movie.inicio;
-        }),
-        movies.end());
+struct Filtro {
+    __host__ __device__
+    bool operator()(const Filme& filme) const {
+        return filme.fim <= filme.inicio;
+    }
+};
+
+struct Combination {
+    int count;
+    vector<Filme> filmes;
+};
+
+vector<int> getCategoriaCounts(const Combination& combination) {
+    vector<int> categoriaCounts(10, 0);  // Assumindo que o máximo número de categorias é 10
+    for (const auto& filme : combination.filmes) {
+        categoriaCounts[filme.categoria]++;
+    }
+    return categoriaCounts;
 }
 
-bool isTimeAvailable(const thrust::device_vector<bool>& times, const filme& movie) {
-    for (int i = movie.inicio; i < movie.fim; i++) {
-        if (times[i]) {
+bool checkCategoriaLimits(const Combination& combination, const vector<int>& categoriasMax) {
+    vector<int> categoriaCounts = getCategoriaCounts(combination);
+    for (int i = 1; i <= categoriasMax.size(); i++) {
+        if (categoriaCounts[i] > categoriasMax[i - 1]) {
             return false;
         }
     }
     return true;
 }
 
-thrust::host_vector<filme> chooseMovies(thrust::host_vector<filme>& movies, thrust::host_vector<int>& categoriesMax) {
-    int n = movies.size();
-    int combinations = 1 << n; // 2^n
-    thrust::host_vector<filme> chosenMovies;
-    thrust::host_vector<bool> movieTimes(24, false);
-
-    for (int i = 1; i < combinations; i++) {
-        bool valid = true;
-        thrust::host_vector<filme> currentSelection;
-        thrust::host_vector<bool> currentMovieTimes = movieTimes;
-        thrust::host_vector<int> currentCategoriesMax = categoriesMax;
-
-        for (int j = 0; j < n; j++) {
-            if ((i >> j) & 1) {
-                filme currentMovie = movies[j];
-                if (currentCategoriesMax[currentMovie.categoria - 1] > 0 && isTimeAvailable(currentMovieTimes, currentMovie)) {
-                    currentSelection.push_back(currentMovie);
-                    for (int k = currentMovie.inicio; k < currentMovie.fim; k++) {
-                        currentMovieTimes[k] = true;
-                    }
-                    currentCategoriesMax[currentMovie.categoria - 1]--;
-                } else {
-                    valid = false;
-                    break;
-                }
-            }
-        }
-        if (valid && currentSelection.size() > chosenMovies.size()) {
-            chosenMovies = currentSelection;
-        }
-    }
-
-    return chosenMovies;
+bool checkOverlap(const Filme& filme1, const Filme& filme2) {
+    return filme1.inicio < filme2.fim && filme2.inicio < filme1.fim;
 }
 
-int main() {
-    int n, n_categories;
-    cin >> n >> n_categories;
-
-    thrust::host_vector<filme> movies(n);
-    thrust::host_vector<int> categoriesMax(n_categories);
-
-    for (int i = 0; i < n_categories; i++) {
-        cin >> categoriesMax[i];
+Combination findMaxCombination(const thrust::device_vector<Filme>& filmesDevice, const vector<int>& categoriasMax,
+                               Combination& currentCombination, int currentIndex) {
+    if (currentIndex >= filmesDevice.size()) {
+        return currentCombination;
     }
 
-    for (int i = 0; i < n; i++) {
-        cin >> movies[i].inicio >> movies[i].fim >> movies[i].categoria;
-        if (movies[i].fim == 0) {
-            movies[i].fim = 24;
+    const Filme& filmeAtual = filmesDevice[currentIndex];
+
+    // Verificar se o filme atual pode ser adicionado à combinação
+    bool podeAdicionarFilme = true;
+
+    // Verificar se há overlap entre o filme atual e os filmes já presentes na combinação
+    for (const auto& filme : currentCombination.filmes) {
+        if (checkOverlap(filme, filmeAtual)) {
+            podeAdicionarFilme = false;
+            break;
         }
     }
 
-    filtro(movies);
+    Combination maxCombination = currentCombination;
 
-    thrust::sort(thrust::host, movies.begin(), movies.end());
+    if (podeAdicionarFilme) {
+        Combination withFilme = currentCombination;
+        withFilme.filmes.push_back(filmeAtual);
+        withFilme.count++;
 
-    thrust::host_vector<filme> chosenMovies = chooseMovies(movies, categoriesMax);
+        // Verificar se a combinação atual satisfaz as restrições de categorias
+        if (checkCategoriaLimits(withFilme, categoriasMax)) {
+            // Chamada recursiva para testar a próxima posição
+            Combination combinationWithFilme = findMaxCombination(filmesDevice, categoriasMax, withFilme, currentIndex + 1);
 
-    cout << "Número de filmes: " << chosenMovies.size() << endl;
+            if (combinationWithFilme.count > maxCombination.count) {
+                maxCombination = combinationWithFilme;
+            }
+        }
+    }
 
-    for (int i = 0; i < chosenMovies.size(); i++) {
-        cout << chosenMovies[i].inicio << " " << chosenMovies[i].fim << " " << chosenMovies[i].categoria << endl;
+    // Verificar se é possível obter uma combinação melhor a partir da próxima posição
+    if (currentCombination.count + filmesDevice.size() - currentIndex > maxCombination.count) {
+        // Chamada recursiva para pular para a próxima posição sem adicionar o filme atual
+        Combination combinationWithoutFilme = findMaxCombination(filmesDevice, categoriasMax, currentCombination, currentIndex + 1);
+
+        if (combinationWithoutFilme.count > maxCombination.count) {
+            maxCombination = combinationWithoutFilme;
+        }
+    }
+
+    return maxCombination;
+}
+
+bool validateArgs(int argc, char *argv[]) {
+    if (argc < 2) {
+        cerr << "Usage: " << argv[0] << " <filename>" << endl;
+        return false;
+    }
+    return true;
+}
+
+int main(int argc, char *argv[]) {
+    if (!validateArgs(argc, argv)) {
+        return 1;
+    }
+
+    int N;
+    int M;
+    vector<Filme> filmes;
+    vector<int> categoriasMax;
+
+    cin >> N >> M;
+
+    for (int i = 0; i < M; i++) {
+        int categoriaMax;
+        cin >> categoriaMax;
+        categoriasMax.push_back(categoriaMax);
+    }
+
+    for (int i = 0; i < N; i++) {
+        Filme filme;
+        cin >> filme.inicio >> filme.fim >> filme.categoria;
+        filmes.push_back(filme);
+    }
+
+    thrust::host_vector<Filme> filmesHost = filmes;
+    thrust::device_vector<Filme> filmesDevice = filmesHost;
+
+    thrust::sort(filmesDevice.begin(), filmesDevice.end(), CompareFilmes());
+
+    filmesDevice.erase(thrust::remove_if(filmesDevice.begin(), filmesDevice.end(), Filtro()), filmesDevice.end());
+
+    thrust::host_vector<Filme> filmesResultadoHost = filmesDevice;
+
+    Combination combinacaoAtual;
+    Combination maxCombination = findMaxCombination(filmesDevice, categoriasMax, combinacaoAtual, 0);
+
+    cout << maxCombination.filmes.size() << endl;
+    for (const auto& filme : maxCombination.filmes) {
+        cout << filme.inicio << " " << filme.fim << " " << filme.categoria << endl;
     }
 
     return 0;
 }
+
 
