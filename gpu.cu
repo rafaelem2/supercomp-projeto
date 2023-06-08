@@ -105,19 +105,7 @@ Combination findMaxCombination(const thrust::device_vector<Filme>& filmesDevice,
     return maxCombination;
 }
 
-bool validateArgs(int argc, char *argv[]) {
-    if (argc < 2) {
-        cerr << "Usage: " << argv[0] << " <filename>" << endl;
-        return false;
-    }
-    return true;
-}
-
-int main(int argc, char *argv[]) {
-    if (!validateArgs(argc, argv)) {
-        return 1;
-    }
-
+int main() {
     int N;
     int M;
     vector<Filme> filmes;
